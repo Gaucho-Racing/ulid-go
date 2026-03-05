@@ -2,17 +2,7 @@
 
 [![CI](https://github.com/Gaucho-Racing/ulid-go/actions/workflows/ci.yml/badge.svg)](https://github.com/Gaucho-Racing/ulid-go/actions/workflows/ci.yml)
 
-A blazing fast, production-grade [ULID](https://github.com/ulid/spec) implementation in Go with lowercase output, prefix support, and distributed collision-free guarantees.
-
-```
-  01an4z07by      79ka1307sr9x4mv3
-
- |----------|    |----------------|
-  Timestamp          Randomness
-   48 bits            80 bits
-```
-
-## Features
+A blazing fast, production-grade [ULID](https://github.com/ulid/spec) implementation in Go. Designed to provide a consistent, ergonomic identifier format across Gaucho Racing's services and projects — from telemetry ingestion to user-facing APIs.
 
 - **Lowercase by default** — all string output uses lowercase Crockford Base32
 - **Prefix support** — generate entity-scoped IDs like `user_01arz3ndek...` or `txn_01arz3ndek...`
@@ -60,32 +50,219 @@ func main() {
 
     // Parse it back
     parsed, _ := ulid.Parse("01jgy5fz7rqv8s3n0x4m6k2w1h")
-    fmt.Println(parsed.Time())       // Unix millisecond timestamp
-    fmt.Println(parsed.Timestamp())  // time.Time
+    fmt.Println(parsed.Time())      // Unix millisecond timestamp
+    fmt.Println(parsed.Timestamp()) // time.Time
 
     // Parse prefixed IDs
-    prefix, id, _ := ulid.ParsePrefixed("user_01jgy5fz7rqv8s3n0x4m6k2w1h")
+    prefix, parsed, _ := ulid.ParsePrefixed("user_01jgy5fz7rqv8s3n0x4m6k2w1h")
     fmt.Println(prefix) // "user"
+
+    // Use a Generator for distributed systems
+    gen := ulid.NewGenerator(
+        ulid.WithNodeID(1),
+        ulid.WithPrefix("evt"),
+    )
+    fmt.Println(gen.MakePrefixed()) // evt_01jgy5fz7r...
 }
 ```
 
-### Distributed Systems
+## Specification
 
-For multi-node deployments, use a `Generator` with a unique node ID per process. The node ID is embedded in the entropy field, partitioning the ID space so that no two nodes can ever produce the same ULID — even within the same millisecond — without any external coordination.
+This library implements the [ULID spec](https://github.com/ulid/spec) with several opinionated extensions. This section covers the binary format, encoding, monotonicity behavior, distributed uniqueness strategy, and every deviation from the official spec.
 
-```go
-// Assign a unique node ID to each process (0-65535)
-gen := ulid.NewGenerator(
-    ulid.WithNodeID(1),        // unique per node
-    ulid.WithPrefix("evt"),    // optional default prefix
-)
+### Binary Layout
 
-id := gen.Make()                  // 01jgy5fz7r...
-prefixed := gen.MakePrefixed()    // uses default prefix: evt_01jgy5fz7r...
-custom := gen.MakePrefixed("txn") // override with "txn": txn_01jgy5fz7r...
+A ULID is 128 bits (16 bytes), stored in big-endian (network byte order) as a `[16]byte` value type:
+
+```
+ 0                   1                   2                   3
+  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ |                      32_bit_uint_time_high                    |
+ +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ |     16_bit_uint_time_low      |       16_bit_uint_random      |
+ +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ |                       32_bit_uint_random                      |
+ +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ |                       32_bit_uint_random                      |
+ +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-The node ID occupies the first 2 bytes of the 80-bit entropy field (16 bits = 65,536 possible nodes), leaving 64 bits for monotonic random entropy. Within a single node, monotonic entropy ensures strict ordering and uniqueness. Across nodes, the node ID partition guarantees no collisions.
+| Component | Bytes | Bits | Description |
+|---|---|---|---|
+| Timestamp | `[0:6]` | 48 | Unix milliseconds, big-endian. Valid until year 10889 AD. |
+| Entropy | `[6:16]` | 80 | Cryptographic randomness (or node-partitioned randomness). |
+
+Using `[16]byte` as the underlying type means ULIDs are **value types** — they live on the stack, are directly comparable with `==`, and require no heap allocation. `bytes.Compare` ordering on the raw bytes is consistent with chronological and lexicographic string ordering because the timestamp occupies the most significant bytes.
+
+### Crockford Base32 Encoding
+
+The string representation is 26 characters using the Crockford Base32 alphabet:
+
+```
+0123456789abcdefghjkmnpqrstvwxyz
+```
+
+The first 10 characters encode the 48-bit timestamp, the remaining 16 encode the 80-bit entropy:
+
+```
+ttttttttttrrrrrrrrrrrrrrrr
+```
+
+The encoding and decoding are **fully unrolled** — every bit extraction/insertion is a single explicit line with no loops. Decoding uses a 256-byte lookup table for O(1) character-to-value conversion, and both upper and lowercase map to the same values, making parsing inherently case-insensitive without any `strings.ToUpper` call.
+
+**Overflow check**: 26 Base32 characters technically encode 130 bits, but a ULID only uses 128. The first character is restricted to values `0`–`7` (3 bits). Any ULID string starting with `8` or higher is rejected with `ErrOverflow`. The largest valid ULID is `7zzzzzzzzzzzzzzzzzzzzzzzzz`.
+
+#### `Parse` vs `ParseStrict`
+
+`Parse` skips character validation for speed — invalid characters (like `I`, `L`, `O`, `U`) will silently produce wrong bits rather than returning an error. This is a deliberate performance tradeoff: **10.6 ns vs 17.7 ns**. Use `ParseStrict` when accepting untrusted input. Use `Parse` when you control the input (e.g., reading from your own database).
+
+### Monotonicity
+
+When multiple ULIDs are generated within the same millisecond, the spec requires monotonic ordering. This library implements monotonicity through `MonotonicEntropy`:
+
+```go
+entropy := ulid.Monotonic(rand.Reader, 0)
+
+// All three share the same millisecond — entropy is incremented, not re-randomized
+id1, _ := ulid.New(ms, entropy) // random entropy R
+id2, _ := ulid.New(ms, entropy) // R + random_increment
+id3, _ := ulid.New(ms, entropy) // R + random_increment + random_increment
+// id1 < id2 < id3 guaranteed
+```
+
+The increment is a random value between 1 and `inc` (default `math.MaxUint32`). This balances unpredictability with entropy space utilization. A lower `inc` (e.g., 1) produces more IDs per millisecond before overflow but makes sequential IDs predictable.
+
+**Overflow behavior**: The 80-bit entropy space is tracked using a custom `uint80` type (`uint16` high + `uint64` low) rather than `math/big.Int` to avoid heap allocations. When incrementing would overflow, `ErrMonotonicOverflow` is returned — the library **never** silently wraps around or advances the timestamp, as that would break sort ordering. Callers must handle this (e.g., sleep until the next millisecond).
+
+**Thread safety**: `MonotonicEntropy` itself is **not** thread-safe. For concurrent use, wrap it with `LockedMonotonicReader` (which adds a `sync.Mutex`), or use `DefaultEntropy()` / `Make()` which do this automatically. The `Generator` type also handles its own locking internally.
+
+**Fast-path optimization**: When the underlying entropy source implements `Int63n(n int64) int64` (as `*math/rand.Rand` does), the monotonic increment is computed directly via that method instead of reading and masking random bytes. This avoids the overhead of `io.ReadFull` for the increment.
+
+### Entropy Sources
+
+The library accepts any `io.Reader` as an entropy source, giving callers full control:
+
+| Source | Speed | Security | Notes |
+|---|---|---|---|
+| `crypto/rand.Reader` | ~160 ns/op | Cryptographic | Default. Uses OS entropy pool. |
+| `math/rand.Rand` | ~82 ns/op | Pseudorandom | Fast, not safe for concurrent use without wrapping. |
+| `Monotonic(r, inc)` | ~66–72 ns/op | Inherits from `r` | Increments within same ms instead of re-reading. |
+| `nil` | N/A | None | Zero entropy. Useful for timestamp-only IDs. |
+
+The `Monotonic` constructor wraps the reader in a `bufio.Reader` to reduce syscall overhead, which is especially beneficial when using `crypto/rand`.
+
+### Distributed Uniqueness
+
+For multi-node deployments, the `Generator` type supports embedding a **16-bit node ID** in the first 2 bytes of the entropy field:
+
+```go
+gen := ulid.NewGenerator(ulid.WithNodeID(42))
+id := gen.Make()
+```
+
+This partitions the entropy layout as follows:
+
+```
+ Bytes [0:6]  - 48-bit timestamp (unchanged)
+ Bytes [6:8]  - 16-bit node ID (0–65535)
+ Bytes [8:16] - 64-bit monotonic random entropy
+```
+
+Two generators with different node IDs **cannot** produce the same ULID, even within the same millisecond, because their entropy spaces are disjoint. This provides the same uniqueness guarantee as a centralized ID service but with zero coordination overhead.
+
+**Tradeoffs**: Embedding a node ID reduces the random entropy from 80 bits to 64 bits. This still provides 1.8×10¹⁹ unique values per millisecond per node, which is more than sufficient for any practical workload. However, the node ID is **not** monotonically incremented — it overwrites bytes 6–7 after the monotonic entropy is written to bytes 6–15. This means that within a single node, IDs from a `Generator` with a node ID are **not** guaranteed to be monotonically ordered within the same millisecond (the node ID clobbers the high bits of the monotonic sequence). If you need both distributed uniqueness and intra-millisecond monotonic ordering, you should use different millisecond granularity or accept the ordering limitation.
+
+### Prefixed IDs
+
+Prefixed IDs are a library extension for entity-scoped identifiers:
+
+```go
+id := ulid.Make()
+id.Prefixed("user") // "user_01arz3ndektsv4rrffq69g5fav"
+id.Prefixed("txn")  // "txn_01arz3ndektsv4rrffq69g5fav"
+```
+
+The prefix is **not** part of the ULID itself — it is prepended at string formatting time with an underscore separator. The underlying 128-bit binary representation is identical regardless of prefix. `ParsePrefixed` splits on the first `_` and parses the ULID portion:
+
+```go
+prefix, id, err := ulid.ParsePrefixed("user_01arz3ndektsv4rrffq69g5fav")
+// prefix = "user", id = the parsed ULID, err = nil
+```
+
+Prefixes are not validated — the library does not enforce any naming convention. By convention, use short lowercase alphanumeric strings like `user`, `txn`, `evt`, `msg`.
+
+### Deviations from the Official Spec
+
+| Behavior | Official Spec | This Library |
+|---|---|---|
+| **String case** | Uppercase (`01ARZ3NDEK...`) | Lowercase (`01arz3ndek...`). Parsing remains case-insensitive. |
+| **Prefixed IDs** | Not specified | Supported via `Prefixed()` and `ParsePrefixed()`. |
+| **Node ID partitioning** | Not specified | Supported via `Generator` with `WithNodeID()`. |
+| **`driver.Valuer` output** | Not specified | Returns `[]byte` (16-byte binary), not a string. Use `id.String()` if your database requires text. |
+| **Excluded letter handling** | Crockford spec maps `I`→`1`, `L`→`1`, `O`→`0` during decoding | Not mapped. `I`, `L`, `O`, `U` are treated as invalid in strict mode and produce undefined results in non-strict mode. |
+
+### Footguns
+
+- **`Parse` does not validate characters.** If you pass `"IIIIIIIIIIIIIIIIIIIIIIIIII"` (26 I's) to `Parse`, it will not return an error — it will produce garbage. Use `ParseStrict` for untrusted input.
+- **`MonotonicEntropy` is not thread-safe.** Using it from multiple goroutines without `LockedMonotonicReader` will corrupt state. `Make()` and `Generator` handle this for you.
+- **`Bytes()` and `Entropy()` return copies.** This is intentional to prevent callers from mutating ULID internals through the returned slice. If you need zero-copy access, index into the `[16]byte` array directly (e.g., `id[6:]` for entropy).
+- **`Generator` with node ID clobbers monotonic high bits.** See the distributed uniqueness section above. If intra-millisecond ordering matters more than distributed uniqueness, use `Make()` instead of a `Generator` with a node ID.
+- **Monotonic overflow is an error, not a retry.** When `ErrMonotonicOverflow` is returned, the caller is responsible for handling it (typically by sleeping until the next millisecond). The library will not silently advance the timestamp.
+
+## Benchmarks
+
+### Apple M1 Max (arm64)
+
+```
+BenchmarkNew/crypto/rand          6,975,308      159.9 ns/op    16 B/op    1 allocs/op
+BenchmarkNew/math/rand           15,504,117       81.73 ns/op   16 B/op    1 allocs/op
+BenchmarkNew/monotonic/crypto    16,502,566       72.44 ns/op   16 B/op    1 allocs/op
+BenchmarkNew/monotonic/math      18,158,854       65.99 ns/op   16 B/op    1 allocs/op
+BenchmarkMake                    14,831,469       81.97 ns/op   16 B/op    1 allocs/op
+BenchmarkParse                  100,000,000       10.61 ns/op    0 B/op    0 allocs/op
+BenchmarkParseStrict             68,122,470       17.68 ns/op    0 B/op    0 allocs/op
+BenchmarkParsePrefixed           88,345,999       13.54 ns/op    0 B/op    0 allocs/op
+BenchmarkString                  49,137,532       24.49 ns/op   32 B/op    1 allocs/op
+BenchmarkPrefixed                46,420,616       25.32 ns/op   32 B/op    1 allocs/op
+BenchmarkMarshalTextTo          100,000,000       10.73 ns/op    0 B/op    0 allocs/op
+BenchmarkMarshalBinaryTo        579,008,643        2.19 ns/op    0 B/op    0 allocs/op
+BenchmarkUnmarshalText          122,359,550        9.93 ns/op    0 B/op    0 allocs/op
+BenchmarkUnmarshalBinary        571,956,039        2.12 ns/op    0 B/op    0 allocs/op
+BenchmarkCompare                123,713,810        9.90 ns/op    0 B/op    0 allocs/op
+BenchmarkGeneratorMake           14,063,845       88.94 ns/op   16 B/op    1 allocs/op
+BenchmarkGeneratorConcurrent      4,958,121      241.0  ns/op   16 B/op    1 allocs/op
+```
+
+### AMD EPYC 7763 (amd64, GitHub Actions CI)
+
+```
+BenchmarkNew/crypto/rand          9,377,283      128.0  ns/op   16 B/op    1 allocs/op
+BenchmarkNew/math/rand           12,722,694       93.01 ns/op   16 B/op    1 allocs/op
+BenchmarkNew/monotonic/crypto    10,965,668      108.0  ns/op   16 B/op    1 allocs/op
+BenchmarkNew/monotonic/math      13,091,515       90.47 ns/op   16 B/op    1 allocs/op
+BenchmarkMake                     9,826,458      121.0  ns/op   16 B/op    1 allocs/op
+BenchmarkParse                   83,818,396       13.94 ns/op    0 B/op    0 allocs/op
+BenchmarkParseStrict             52,037,438       23.25 ns/op    0 B/op    0 allocs/op
+BenchmarkParsePrefixed           70,872,340       16.80 ns/op    0 B/op    0 allocs/op
+BenchmarkString                  46,549,191       25.63 ns/op    0 B/op    0 allocs/op
+BenchmarkPrefixed                27,321,324       42.23 ns/op   32 B/op    1 allocs/op
+BenchmarkMarshalTextTo           65,082,040       18.25 ns/op    0 B/op    0 allocs/op
+BenchmarkMarshalBinaryTo      1,000,000,000        0.33 ns/op    0 B/op    0 allocs/op
+BenchmarkUnmarshalText           90,637,104       13.35 ns/op    0 B/op    0 allocs/op
+BenchmarkUnmarshalBinary      1,000,000,000        0.31 ns/op    0 B/op    0 allocs/op
+BenchmarkCompare                145,768,833        9.01 ns/op    0 B/op    0 allocs/op
+BenchmarkGeneratorMake            9,635,883      122.6  ns/op   16 B/op    1 allocs/op
+BenchmarkGeneratorConcurrent      7,564,996      154.6  ns/op   16 B/op    1 allocs/op
+```
+
+### Highlights
+
+- **Parse: 10–14 ns, 0 allocs** — zero-allocation decoding via 256-byte lookup table
+- **MarshalBinaryTo: 0.3–2.2 ns, 0 allocs** — sub-nanosecond on EPYC, a single `copy()` call
+- **UnmarshalBinary: 0.3–2.1 ns, 0 allocs** — sub-nanosecond on EPYC
+- **Make: 82–121 ns** — generate 8–12 million ULIDs/sec per core
+- **Generator concurrent: 155–241 ns** — 4–6.5 million ULIDs/sec under contention
 
 ## API
 
@@ -160,67 +337,6 @@ The node ID occupies the first 2 bytes of the 80-bit entropy field (16 bits = 65
 | `gen.MakePrefixed(p...)` | Generate a prefixed ULID string. |
 | `gen.New(ms)` | Generate with explicit timestamp. |
 | `gen.NodeID()` | Get the configured node ID. |
-
-## Benchmarks
-
-Measured on Apple M1 Max:
-
-```
-BenchmarkNew/crypto/rand          6,975,308      159.9 ns/op    16 B/op    1 allocs/op
-BenchmarkNew/math/rand           15,504,117       81.73 ns/op   16 B/op    1 allocs/op
-BenchmarkNew/monotonic/crypto    16,502,566       72.44 ns/op   16 B/op    1 allocs/op
-BenchmarkNew/monotonic/math      18,158,854       65.99 ns/op   16 B/op    1 allocs/op
-BenchmarkMake                    14,831,469       81.97 ns/op   16 B/op    1 allocs/op
-BenchmarkParse                  100,000,000       10.61 ns/op    0 B/op    0 allocs/op
-BenchmarkParseStrict             68,122,470       17.68 ns/op    0 B/op    0 allocs/op
-BenchmarkParsePrefixed           88,345,999       13.54 ns/op    0 B/op    0 allocs/op
-BenchmarkString                  49,137,532       24.49 ns/op   32 B/op    1 allocs/op
-BenchmarkPrefixed                46,420,616       25.32 ns/op   32 B/op    1 allocs/op
-BenchmarkMarshalTextTo          100,000,000       10.73 ns/op    0 B/op    0 allocs/op
-BenchmarkMarshalBinaryTo        579,008,643        2.19 ns/op    0 B/op    0 allocs/op
-BenchmarkUnmarshalText          122,359,550        9.93 ns/op    0 B/op    0 allocs/op
-BenchmarkUnmarshalBinary        571,956,039        2.12 ns/op    0 B/op    0 allocs/op
-BenchmarkCompare                123,713,810        9.90 ns/op    0 B/op    0 allocs/op
-BenchmarkGeneratorMake           14,063,845       88.94 ns/op   16 B/op    1 allocs/op
-BenchmarkGeneratorConcurrent      4,958,121      241.0  ns/op   16 B/op    1 allocs/op
-```
-
-Key highlights:
-- **Parse: 10.6 ns, 0 allocs** — zero-allocation decoding
-- **MarshalBinaryTo: 2.2 ns, 0 allocs** — sub-3ns binary serialization
-- **UnmarshalBinary: 2.1 ns, 0 allocs** — sub-3ns binary deserialization
-- **Make: 82 ns** — generate ~12 million ULIDs/sec per core
-- **Generator concurrent: 241 ns** — ~4.1 million ULIDs/sec under contention
-
-## Specification
-
-This library implements the [ULID spec](https://github.com/ulid/spec) with the following layout:
-
-```
- 0                   1                   2                   3
-  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
- +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- |                      32_bit_uint_time_high                    |
- +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- |     16_bit_uint_time_low      |       16_bit_uint_random      |
- +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- |                       32_bit_uint_random                      |
- +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- |                       32_bit_uint_random                      |
- +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-```
-
-- **Timestamp**: 48-bit Unix milliseconds (bytes 0-5), valid until year 10889
-- **Entropy**: 80-bit random (bytes 6-15), cryptographically sourced by default
-- **Encoding**: Crockford Base32, lowercase, 26 characters
-- **Monotonicity**: Within the same millisecond, entropy is incremented to ensure strict sort order
-
-When using a `Generator` with a node ID, the entropy layout becomes:
-
-```
- Bytes [6:8]  - 16-bit node ID
- Bytes [8:16] - 64-bit monotonic random entropy
-```
 
 ## Contributing
 
