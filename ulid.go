@@ -1,3 +1,27 @@
+// Package ulid implements the Universally Unique Lexicographically Sortable
+// Identifier (ULID) specification as defined in https://github.com/ulid/spec.
+//
+// A ULID is a 128-bit identifier composed of a 48-bit Unix millisecond
+// timestamp and 80 bits of cryptographic randomness, encoded as a 26-character
+// lowercase Crockford Base32 string. ULIDs are designed to be a drop-in
+// replacement for UUIDs with the added benefit of being lexicographically
+// sortable by creation time.
+//
+// The simplest way to generate a ULID:
+//
+//	id := ulid.Make()
+//	fmt.Println(id) // e.g., "01arz3ndektsv4rrffq69g5fav"
+//
+// For prefixed identifiers (useful for entity-scoped IDs):
+//
+//	id := ulid.Make()
+//	fmt.Println(id.Prefixed("user")) // "user_01arz3ndektsv4rrffq69g5fav"
+//
+// For distributed systems, use a [Generator] with a node ID to guarantee
+// uniqueness across nodes without coordination:
+//
+//	gen := ulid.NewGenerator(ulid.WithNodeID(42))
+//	id := gen.Make()
 package ulid
 
 import (
@@ -11,20 +35,10 @@ import (
 
 // ULID is a 16-byte Universally Unique Lexicographically Sortable Identifier.
 //
-// The components are encoded as 16 octets. Each component is encoded with the
-// Most Significant Byte first (network byte order).
+// The components are encoded as 16 octets in big-endian (network byte order):
 //
-//	0                   1                   2                   3
-//	 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-//	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-//	|                      32_bit_uint_time_high                    |
-//	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-//	|     16_bit_uint_time_low      |       16_bit_uint_random      |
-//	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-//	|                       32_bit_uint_random                      |
-//	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-//	|                       32_bit_uint_random                      |
-//	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+//	Bytes [0:6]  - 48-bit Unix millisecond timestamp
+//	Bytes [6:16] - 80-bit entropy (randomness or node-partitioned randomness)
 type ULID [16]byte
 
 const (
@@ -34,8 +48,8 @@ const (
 	// BinarySize is the length of a ULID in binary form.
 	BinarySize = 16
 
-	// Encoding is the Crockford Base32 alphabet used for ULID encoding.
-	Encoding = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+	// encoding is the lowercase Crockford Base32 alphabet used for ULID encoding.
+	encoding = "0123456789abcdefghjkmnpqrstvwxyz"
 
 	// maxTime is the maximum Unix timestamp in milliseconds that can be
 	// encoded in a ULID's 48-bit timestamp field.
@@ -54,43 +68,44 @@ var (
 	ErrOverflow          = errors.New("ulid: overflow when unmarshaling")
 	ErrMonotonicOverflow = errors.New("ulid: monotonic entropy overflow")
 	ErrScanValue         = errors.New("ulid: source value must be a string or byte slice")
+	ErrInvalidPrefix     = errors.New("ulid: invalid prefix format")
 )
 
 // dec is a 256-byte lookup table that maps ASCII characters to their
 // Crockford Base32 values. 0xFF indicates an invalid character.
 var dec = [256]byte{
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x00-0x07
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x08-0x0F
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x10-0x17
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x18-0x1F
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x20-0x27
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x28-0x2F
-	0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, // 0x30-0x37 ('0'-'7')
-	0x08, 0x09, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x38-0x3F ('8'-'9')
-	0xFF, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, // 0x40-0x47 ('A'-'G')
-	0x11, 0xFF, 0x12, 0x13, 0xFF, 0x14, 0x15, 0xFF, // 0x48-0x4F ('H'-'O')  I,L,O excluded
-	0x16, 0x17, 0x18, 0x19, 0x1A, 0xFF, 0x1B, 0x1C, // 0x50-0x57 ('P'-'W')  U excluded
-	0x1D, 0x1E, 0x1F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x58-0x5F ('X'-'Z')
-	0xFF, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, // 0x60-0x67 ('a'-'g')
-	0x11, 0xFF, 0x12, 0x13, 0xFF, 0x14, 0x15, 0xFF, // 0x68-0x6F ('h'-'o')  i,l,o excluded
-	0x16, 0x17, 0x18, 0x19, 0x1A, 0xFF, 0x1B, 0x1C, // 0x70-0x77 ('p'-'w')  u excluded
-	0x1D, 0x1E, 0x1F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x78-0x7F ('x'-'z')
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x80-0x87
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x88-0x8F
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x90-0x97
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x98-0x9F
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xA0-0xA7
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xA8-0xAF
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xB0-0xB7
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xB8-0xBF
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xC0-0xC7
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xC8-0xCF
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xD0-0xD7
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xD8-0xDF
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xE0-0xE7
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xE8-0xEF
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xF0-0xF7
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xF8-0xFF
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x00
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x08
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x10
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x18
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x20
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x28
+	0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, // '0'-'7'
+	0x08, 0x09, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // '8'-'9'
+	0xFF, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, // 'A'-'G'
+	0x11, 0xFF, 0x12, 0x13, 0xFF, 0x14, 0x15, 0xFF, // 'H'-'O'
+	0x16, 0x17, 0x18, 0x19, 0x1A, 0xFF, 0x1B, 0x1C, // 'P'-'W'
+	0x1D, 0x1E, 0x1F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 'X'-'Z'
+	0xFF, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, // 'a'-'g'
+	0x11, 0xFF, 0x12, 0x13, 0xFF, 0x14, 0x15, 0xFF, // 'h'-'o'
+	0x16, 0x17, 0x18, 0x19, 0x1A, 0xFF, 0x1B, 0x1C, // 'p'-'w'
+	0x1D, 0x1E, 0x1F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 'x'-'z'
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x80
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x88
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x90
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x98
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xA0
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xA8
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xB0
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xB8
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xC0
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xC8
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xD0
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xD8
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xE0
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xE8
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xF0
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0xF8
 }
 
 // New creates a ULID with the given Unix millisecond timestamp and entropy
@@ -127,7 +142,7 @@ func MustNew(ms uint64, entropy io.Reader) ULID {
 
 // Make returns a new ULID using the current time and the default
 // process-global monotonic entropy source. This is the simplest way
-// to generate a ULID.
+// to generate a ULID. It is safe for concurrent use.
 func Make() ULID {
 	return MustNew(Now(), defaultEntropy())
 }
@@ -143,6 +158,23 @@ func Parse(ulid string) (id ULID, err error) {
 // character in the input is not in the Crockford Base32 alphabet.
 func ParseStrict(ulid string) (id ULID, err error) {
 	return id, parse([]byte(ulid), true, &id)
+}
+
+// ParsePrefixed parses a prefixed ULID string in the format "prefix_ulid".
+// It returns both the prefix and the parsed ULID. Parsing of the ULID
+// portion is case-insensitive.
+func ParsePrefixed(s string) (prefix string, id ULID, err error) {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '_' {
+			prefix = s[:i]
+			if i+1+EncodedSize != len(s) {
+				return "", id, ErrDataSize
+			}
+			err = parse([]byte(s[i+1:]), false, &id)
+			return prefix, id, err
+		}
+	}
+	return "", id, ErrInvalidPrefix
 }
 
 // MustParse is like [Parse] but panics on error.
@@ -185,11 +217,22 @@ func MaxTime() uint64 {
 	return maxTime
 }
 
-// String returns the ULID as a 26-character Crockford Base32 encoded string.
+// String returns the ULID as a 26-character lowercase Crockford Base32 string.
 func (id ULID) String() string {
 	ulid := make([]byte, EncodedSize)
 	_ = id.MarshalTextTo(ulid)
 	return string(ulid)
+}
+
+// Prefixed returns the ULID as a prefixed string in the format "prefix_ulid".
+// The prefix should be a short, lowercase, alphanumeric entity type identifier
+// such as "user", "txn", or "evt".
+func (id ULID) Prefixed(prefix string) string {
+	buf := make([]byte, len(prefix)+1+EncodedSize)
+	copy(buf, prefix)
+	buf[len(prefix)] = '_'
+	_ = id.MarshalTextTo(buf[len(prefix)+1:])
+	return string(buf)
 }
 
 // Bytes returns a copy of the raw 16-byte ULID data.
@@ -295,14 +338,14 @@ func (id *ULID) UnmarshalBinary(data []byte) error {
 }
 
 // MarshalText implements the [encoding.TextMarshaler] interface by returning
-// the Crockford Base32 encoding of the ULID.
+// the lowercase Crockford Base32 encoding of the ULID.
 func (id ULID) MarshalText() ([]byte, error) {
 	dst := make([]byte, EncodedSize)
 	return dst, id.MarshalTextTo(dst)
 }
 
-// MarshalTextTo writes the Crockford Base32 encoding of the ULID to dst.
-// dst must be at least 26 bytes. Returns [ErrBufferSize] if too small.
+// MarshalTextTo writes the lowercase Crockford Base32 encoding of the ULID
+// to dst. dst must be at least 26 bytes. Returns [ErrBufferSize] if too small.
 //
 // The encoding is fully unrolled for maximum performance.
 func (id ULID) MarshalTextTo(dst []byte) error {
@@ -311,34 +354,34 @@ func (id ULID) MarshalTextTo(dst []byte) error {
 	}
 
 	// Timestamp (6 bytes -> 10 characters)
-	dst[0] = Encoding[(id[0]&224)>>5]
-	dst[1] = Encoding[id[0]&31]
-	dst[2] = Encoding[(id[1]&248)>>3]
-	dst[3] = Encoding[((id[1]&7)<<2)|((id[2]&192)>>6)]
-	dst[4] = Encoding[(id[2]&62)>>1]
-	dst[5] = Encoding[((id[2]&1)<<4)|((id[3]&240)>>4)]
-	dst[6] = Encoding[((id[3]&15)<<1)|((id[4]&128)>>7)]
-	dst[7] = Encoding[(id[4]&124)>>2]
-	dst[8] = Encoding[((id[4]&3)<<3)|((id[5]&224)>>5)]
-	dst[9] = Encoding[id[5]&31]
+	dst[0] = encoding[(id[0]&224)>>5]
+	dst[1] = encoding[id[0]&31]
+	dst[2] = encoding[(id[1]&248)>>3]
+	dst[3] = encoding[((id[1]&7)<<2)|((id[2]&192)>>6)]
+	dst[4] = encoding[(id[2]&62)>>1]
+	dst[5] = encoding[((id[2]&1)<<4)|((id[3]&240)>>4)]
+	dst[6] = encoding[((id[3]&15)<<1)|((id[4]&128)>>7)]
+	dst[7] = encoding[(id[4]&124)>>2]
+	dst[8] = encoding[((id[4]&3)<<3)|((id[5]&224)>>5)]
+	dst[9] = encoding[id[5]&31]
 
 	// Entropy (10 bytes -> 16 characters)
-	dst[10] = Encoding[(id[6]&248)>>3]
-	dst[11] = Encoding[((id[6]&7)<<2)|((id[7]&192)>>6)]
-	dst[12] = Encoding[(id[7]&62)>>1]
-	dst[13] = Encoding[((id[7]&1)<<4)|((id[8]&240)>>4)]
-	dst[14] = Encoding[((id[8]&15)<<1)|((id[9]&128)>>7)]
-	dst[15] = Encoding[(id[9]&124)>>2]
-	dst[16] = Encoding[((id[9]&3)<<3)|((id[10]&224)>>5)]
-	dst[17] = Encoding[id[10]&31]
-	dst[18] = Encoding[(id[11]&248)>>3]
-	dst[19] = Encoding[((id[11]&7)<<2)|((id[12]&192)>>6)]
-	dst[20] = Encoding[(id[12]&62)>>1]
-	dst[21] = Encoding[((id[12]&1)<<4)|((id[13]&240)>>4)]
-	dst[22] = Encoding[((id[13]&15)<<1)|((id[14]&128)>>7)]
-	dst[23] = Encoding[(id[14]&124)>>2]
-	dst[24] = Encoding[((id[14]&3)<<3)|((id[15]&224)>>5)]
-	dst[25] = Encoding[id[15]&31]
+	dst[10] = encoding[(id[6]&248)>>3]
+	dst[11] = encoding[((id[6]&7)<<2)|((id[7]&192)>>6)]
+	dst[12] = encoding[(id[7]&62)>>1]
+	dst[13] = encoding[((id[7]&1)<<4)|((id[8]&240)>>4)]
+	dst[14] = encoding[((id[8]&15)<<1)|((id[9]&128)>>7)]
+	dst[15] = encoding[(id[9]&124)>>2]
+	dst[16] = encoding[((id[9]&3)<<3)|((id[10]&224)>>5)]
+	dst[17] = encoding[id[10]&31]
+	dst[18] = encoding[(id[11]&248)>>3]
+	dst[19] = encoding[((id[11]&7)<<2)|((id[12]&192)>>6)]
+	dst[20] = encoding[(id[12]&62)>>1]
+	dst[21] = encoding[((id[12]&1)<<4)|((id[13]&240)>>4)]
+	dst[22] = encoding[((id[13]&15)<<1)|((id[14]&128)>>7)]
+	dst[23] = encoding[(id[14]&124)>>2]
+	dst[24] = encoding[((id[14]&3)<<3)|((id[15]&224)>>5)]
+	dst[25] = encoding[id[15]&31]
 
 	return nil
 }
@@ -350,7 +393,7 @@ func (id *ULID) UnmarshalText(v []byte) error {
 }
 
 // MarshalJSON implements the [encoding/json.Marshaler] interface by returning
-// the ULID as a quoted Crockford Base32 string.
+// the ULID as a quoted lowercase Crockford Base32 string.
 func (id ULID) MarshalJSON() ([]byte, error) {
 	dst := make([]byte, EncodedSize+2)
 	dst[0] = '"'
@@ -439,8 +482,6 @@ func parse(v []byte, strict bool, id *ULID) error {
 }
 
 // defaultEntropy returns the process-global locked monotonic entropy source.
-// It is initialized lazily on first use with crypto/rand as the underlying
-// entropy source.
 var defaultEntropy = func() func() io.Reader {
 	var e io.Reader
 	var once = new(sync.Once)
@@ -459,4 +500,3 @@ var defaultEntropy = func() func() io.Reader {
 func DefaultEntropy() io.Reader {
 	return defaultEntropy()
 }
-

@@ -68,12 +68,30 @@ func BenchmarkParseStrict(b *testing.B) {
 	}
 }
 
+func BenchmarkParsePrefixed(b *testing.B) {
+	s := ulid.Make().Prefixed("user")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		ulid.ParsePrefixed(s)
+	}
+}
+
 func BenchmarkString(b *testing.B) {
 	id := ulid.Make()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
 		_ = id.String()
+	}
+}
+
+func BenchmarkPrefixed(b *testing.B) {
+	id := ulid.Make()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		_ = id.Prefixed("user")
 	}
 }
 
@@ -177,4 +195,46 @@ func BenchmarkTimestamp(b *testing.B) {
 	for b.Loop() {
 		id.Timestamp()
 	}
+}
+
+// ------- Generator benchmarks -------
+
+func BenchmarkGeneratorMake(b *testing.B) {
+	b.Run("no_node_id", func(b *testing.B) {
+		gen := ulid.NewGenerator()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for b.Loop() {
+			gen.Make()
+		}
+	})
+
+	b.Run("with_node_id", func(b *testing.B) {
+		gen := ulid.NewGenerator(ulid.WithNodeID(42))
+		b.ReportAllocs()
+		b.ResetTimer()
+		for b.Loop() {
+			gen.Make()
+		}
+	})
+}
+
+func BenchmarkGeneratorMakePrefixed(b *testing.B) {
+	gen := ulid.NewGenerator(ulid.WithNodeID(1), ulid.WithPrefix("txn"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		gen.MakePrefixed()
+	}
+}
+
+func BenchmarkGeneratorConcurrent(b *testing.B) {
+	gen := ulid.NewGenerator(ulid.WithNodeID(1))
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			gen.Make()
+		}
+	})
 }

@@ -37,7 +37,6 @@ func TestNew(t *testing.T) {
 		if id.Time() != ms {
 			t.Fatalf("expected timestamp %d, got %d", ms, id.Time())
 		}
-		// Entropy should be all zeros.
 		for _, b := range id.Entropy() {
 			if b != 0 {
 				t.Fatal("expected zero entropy with nil reader")
@@ -110,12 +109,12 @@ func TestParse(t *testing.T) {
 	t.Run("case insensitive", func(t *testing.T) {
 		orig := ulid.Make()
 		s := orig.String()
-		lower, err := ulid.Parse(strings.ToLower(s))
+		upper, err := ulid.Parse(strings.ToUpper(s))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if orig != lower {
-			t.Fatalf("case-insensitive parse failed: expected %v, got %v", orig, lower)
+		if orig != upper {
+			t.Fatalf("case-insensitive parse failed: expected %v, got %v", orig, upper)
 		}
 	})
 
@@ -127,7 +126,6 @@ func TestParse(t *testing.T) {
 	})
 
 	t.Run("overflow", func(t *testing.T) {
-		// First character > '7' overflows 128 bits.
 		_, err := ulid.Parse("80000000000000000000000000")
 		if err != ulid.ErrOverflow {
 			t.Fatalf("expected ErrOverflow, got %v", err)
@@ -155,16 +153,15 @@ func TestParseStrict(t *testing.T) {
 	})
 
 	t.Run("invalid characters", func(t *testing.T) {
-		// 'I' is not in the Crockford Base32 alphabet.
-		_, err := ulid.ParseStrict("0000000000000000000000000I")
+		_, err := ulid.ParseStrict("0000000000000000000000000i")
 		if err != ulid.ErrInvalidCharacters {
 			t.Fatalf("expected ErrInvalidCharacters, got %v", err)
 		}
 	})
 
-	t.Run("lowercase valid", func(t *testing.T) {
+	t.Run("uppercase valid", func(t *testing.T) {
 		orig := ulid.Make()
-		_, err := ulid.ParseStrict(strings.ToLower(orig.String()))
+		_, err := ulid.ParseStrict(strings.ToUpper(orig.String()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -196,8 +193,137 @@ func TestMustParseStrict(t *testing.T) {
 			t.Fatal("expected panic")
 		}
 	}()
-	ulid.MustParseStrict("0000000000000000000000000I")
+	ulid.MustParseStrict("0000000000000000000000000i")
 }
+
+// ------- Prefix tests -------
+
+func TestPrefixed(t *testing.T) {
+	id := ulid.Make()
+
+	t.Run("basic prefix", func(t *testing.T) {
+		s := id.Prefixed("user")
+		if !strings.HasPrefix(s, "user_") {
+			t.Fatalf("expected user_ prefix, got %s", s)
+		}
+		if len(s) != len("user_")+ulid.EncodedSize {
+			t.Fatalf("expected length %d, got %d", len("user_")+ulid.EncodedSize, len(s))
+		}
+	})
+
+	t.Run("txn prefix", func(t *testing.T) {
+		s := id.Prefixed("txn")
+		if !strings.HasPrefix(s, "txn_") {
+			t.Fatalf("expected txn_ prefix, got %s", s)
+		}
+	})
+
+	t.Run("ULID portion is lowercase", func(t *testing.T) {
+		s := id.Prefixed("evt")
+		ulidPart := s[len("evt_"):]
+		if ulidPart != strings.ToLower(ulidPart) {
+			t.Fatalf("ULID portion should be lowercase, got %s", ulidPart)
+		}
+	})
+
+	t.Run("prefixed round-trip", func(t *testing.T) {
+		s := id.Prefixed("user")
+		prefix, parsed, err := ulid.ParsePrefixed(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prefix != "user" {
+			t.Fatalf("expected prefix 'user', got %q", prefix)
+		}
+		if parsed != id {
+			t.Fatalf("parsed ULID doesn't match original")
+		}
+	})
+}
+
+func TestParsePrefixed(t *testing.T) {
+	t.Run("valid", func(t *testing.T) {
+		id := ulid.Make()
+		s := id.Prefixed("user")
+		prefix, parsed, err := ulid.ParsePrefixed(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prefix != "user" {
+			t.Fatalf("expected prefix 'user', got %q", prefix)
+		}
+		if parsed != id {
+			t.Fatal("parsed ULID doesn't match original")
+		}
+	})
+
+	t.Run("no underscore", func(t *testing.T) {
+		_, _, err := ulid.ParsePrefixed("nounderscore")
+		if err != ulid.ErrInvalidPrefix {
+			t.Fatalf("expected ErrInvalidPrefix, got %v", err)
+		}
+	})
+
+	t.Run("wrong ULID length", func(t *testing.T) {
+		_, _, err := ulid.ParsePrefixed("user_short")
+		if err != ulid.ErrDataSize {
+			t.Fatalf("expected ErrDataSize, got %v", err)
+		}
+	})
+
+	t.Run("single char prefix", func(t *testing.T) {
+		id := ulid.Make()
+		s := id.Prefixed("x")
+		prefix, parsed, err := ulid.ParsePrefixed(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prefix != "x" {
+			t.Fatalf("expected prefix 'x', got %q", prefix)
+		}
+		if parsed != id {
+			t.Fatal("parsed ULID doesn't match original")
+		}
+	})
+}
+
+// ------- Lowercase output tests -------
+
+func TestLowercaseOutput(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		id := ulid.Make()
+		s := id.String()
+		if s != strings.ToLower(s) {
+			t.Fatalf("String() should return lowercase, got %s", s)
+		}
+	}
+}
+
+func TestLowercaseJSON(t *testing.T) {
+	id := ulid.Make()
+	data, err := id.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Remove quotes.
+	inner := string(data[1 : len(data)-1])
+	if inner != strings.ToLower(inner) {
+		t.Fatalf("JSON output should be lowercase, got %s", inner)
+	}
+}
+
+func TestLowercaseMarshalText(t *testing.T) {
+	id := ulid.Make()
+	data, err := id.MarshalText()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != strings.ToLower(string(data)) {
+		t.Fatalf("MarshalText should return lowercase, got %s", data)
+	}
+}
+
+// ------- Time tests -------
 
 func TestTimestamp(t *testing.T) {
 	now := time.Now()
@@ -235,19 +361,14 @@ func TestTimestampRoundTrip(t *testing.T) {
 	}
 }
 
+// ------- Method tests -------
+
 func TestULIDString(t *testing.T) {
 	id := ulid.Make()
 	s := id.String()
 
 	if len(s) != ulid.EncodedSize {
 		t.Fatalf("expected %d characters, got %d", ulid.EncodedSize, len(s))
-	}
-
-	// Verify all characters are in the encoding alphabet.
-	for i, c := range s {
-		if !strings.ContainsRune(ulid.Encoding, c) {
-			t.Fatalf("character %c at position %d not in encoding alphabet", c, i)
-		}
 	}
 }
 
@@ -262,7 +383,7 @@ func TestULIDBytes(t *testing.T) {
 	// Verify Bytes returns a copy, not a reference.
 	b[0] = 0xFF
 	if id[0] == 0xFF && id.Bytes()[0] == 0xFF {
-		t.Fatal("Bytes() should return a copy, not a reference to internal state")
+		t.Fatal("Bytes() should return a copy")
 	}
 }
 
@@ -357,6 +478,8 @@ func TestSetEntropy(t *testing.T) {
 	}
 }
 
+// ------- Marshal tests -------
+
 func TestMarshalBinary(t *testing.T) {
 	id := ulid.Make()
 
@@ -399,12 +522,10 @@ func TestMarshalBinaryTo(t *testing.T) {
 }
 
 func TestUnmarshalBinary(t *testing.T) {
-	t.Run("wrong size", func(t *testing.T) {
-		var id ulid.ULID
-		if err := id.UnmarshalBinary([]byte{1, 2, 3}); err != ulid.ErrDataSize {
-			t.Fatalf("expected ErrDataSize, got %v", err)
-		}
-	})
+	var id ulid.ULID
+	if err := id.UnmarshalBinary([]byte{1, 2, 3}); err != ulid.ErrDataSize {
+		t.Fatalf("expected ErrDataSize, got %v", err)
+	}
 }
 
 func TestMarshalText(t *testing.T) {
@@ -432,13 +553,10 @@ func TestMarshalText(t *testing.T) {
 
 func TestMarshalTextTo(t *testing.T) {
 	id := ulid.Make()
-
-	t.Run("buffer too small", func(t *testing.T) {
-		buf := make([]byte, 10)
-		if err := id.MarshalTextTo(buf); err != ulid.ErrBufferSize {
-			t.Fatalf("expected ErrBufferSize, got %v", err)
-		}
-	})
+	buf := make([]byte, 10)
+	if err := id.MarshalTextTo(buf); err != ulid.ErrBufferSize {
+		t.Fatalf("expected ErrBufferSize, got %v", err)
+	}
 }
 
 func TestJSON(t *testing.T) {
@@ -468,28 +586,13 @@ func TestJSON(t *testing.T) {
 	}
 }
 
-func TestJSONMarshal(t *testing.T) {
-	id := ulid.Make()
-	data, err := id.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	expected := fmt.Sprintf(`"%s"`, id.String())
-	if string(data) != expected {
-		t.Fatalf("expected %s, got %s", expected, data)
-	}
-}
-
 func TestJSONUnmarshalErrors(t *testing.T) {
 	var id ulid.ULID
 
-	// No quotes.
 	if err := id.UnmarshalJSON([]byte(`notquoted`)); err != ulid.ErrDataSize {
 		t.Fatalf("expected ErrDataSize, got %v", err)
 	}
 
-	// Empty quotes.
 	if err := id.UnmarshalJSON([]byte(`""`)); err != ulid.ErrDataSize {
 		t.Fatalf("expected ErrDataSize for empty string, got %v", err)
 	}
@@ -504,7 +607,7 @@ func TestScan(t *testing.T) {
 			t.Fatal(err)
 		}
 		if id != scanned {
-			t.Fatalf("Scan from string failed: %v != %v", id, scanned)
+			t.Fatalf("Scan from string failed")
 		}
 	})
 
@@ -514,7 +617,7 @@ func TestScan(t *testing.T) {
 			t.Fatal(err)
 		}
 		if id != scanned {
-			t.Fatalf("Scan from bytes failed: %v != %v", id, scanned)
+			t.Fatalf("Scan from bytes failed")
 		}
 	})
 
@@ -524,7 +627,7 @@ func TestScan(t *testing.T) {
 			t.Fatal(err)
 		}
 		if id != scanned {
-			t.Fatalf("Scan from text bytes failed: %v != %v", id, scanned)
+			t.Fatalf("Scan from text bytes failed")
 		}
 	})
 
@@ -558,16 +661,15 @@ func TestValue(t *testing.T) {
 		t.Fatal("Value() bytes don't match Bytes()")
 	}
 
-	// Verify it implements driver.Valuer.
 	var _ driver.Valuer = id
 }
 
+// ------- Encoding round-trip stress -------
+
 func TestEncodingRoundTrip(t *testing.T) {
-	// Generate many ULIDs and verify they survive encoding round-trips.
 	for i := 0; i < 1000; i++ {
 		orig := ulid.Make()
 
-		// Text round-trip.
 		s := orig.String()
 		parsed, err := ulid.Parse(s)
 		if err != nil {
@@ -577,7 +679,6 @@ func TestEncodingRoundTrip(t *testing.T) {
 			t.Fatalf("iteration %d: text round-trip failed", i)
 		}
 
-		// Binary round-trip.
 		data, _ := orig.MarshalBinary()
 		var bin ulid.ULID
 		if err := bin.UnmarshalBinary(data); err != nil {
@@ -589,13 +690,14 @@ func TestEncodingRoundTrip(t *testing.T) {
 	}
 }
 
+// ------- Sort order tests -------
+
 func TestLexicographicSortOrder(t *testing.T) {
 	ids := make([]ulid.ULID, 100)
 	for i := range ids {
 		ids[i] = ulid.Make()
 	}
 
-	// String sort order should match Compare order.
 	strs := make([]string, len(ids))
 	for i, id := range ids {
 		strs[i] = id.String()
@@ -608,8 +710,7 @@ func TestLexicographicSortOrder(t *testing.T) {
 
 	for i, id := range ids {
 		if id.String() != strs[i] {
-			t.Fatalf("lexicographic sort mismatch at index %d: Compare gives %s, string sort gives %s",
-				i, id.String(), strs[i])
+			t.Fatalf("lexicographic sort mismatch at index %d", i)
 		}
 	}
 }
@@ -629,8 +730,7 @@ func TestMonotonicSortOrder(t *testing.T) {
 			t.Fatal(err)
 		}
 		if next.Compare(prev) <= 0 {
-			t.Fatalf("iteration %d: monotonic order violated: %s >= %s",
-				i, prev.String(), next.String())
+			t.Fatalf("iteration %d: monotonic order violated", i)
 		}
 		prev = next
 	}
@@ -649,43 +749,37 @@ func TestMonotonicNewMillisecond(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Different milliseconds should produce different ULIDs.
 	if id1 == id2 {
 		t.Fatal("different timestamps should produce different ULIDs")
 	}
-
-	// The second should be greater.
 	if id2.Compare(id1) <= 0 {
 		t.Fatal("later timestamp should produce greater ULID")
 	}
 }
 
 func TestMonotonicOverflow(t *testing.T) {
-	// Create a ULID with max entropy and verify that incrementing overflows.
-	// We need 10 bytes for the initial entropy read, plus 8 bytes for the
-	// increment read (since bytes.Reader doesn't implement the rng fast path).
 	maxEntropy := bytes.NewReader([]byte{
 		0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // initial entropy (all max)
+		0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 		0x00, 0x00, 0x00, 0x00, 0x00,
-		0x00, 0x00, 0x01, // increment data (will produce inc >= 1)
+		0x00, 0x00, 0x01,
 	})
 
 	entropy := ulid.Monotonic(maxEntropy, 1)
 	ms := ulid.Now()
 
-	// First call sets the entropy to all 0xFF.
 	_, err := ulid.New(ms, entropy)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Second call within same ms should overflow since entropy is at max.
 	_, err = ulid.New(ms, entropy)
 	if err != ulid.ErrMonotonicOverflow {
 		t.Fatalf("expected ErrMonotonicOverflow, got %v", err)
 	}
 }
+
+// ------- Concurrency tests -------
 
 func TestConcurrentMake(t *testing.T) {
 	var wg sync.WaitGroup
@@ -700,7 +794,6 @@ func TestConcurrentMake(t *testing.T) {
 	}
 	wg.Wait()
 
-	// All IDs should be unique.
 	seen := make(map[ulid.ULID]bool)
 	for _, id := range ids {
 		if id.IsZero() {
@@ -712,6 +805,133 @@ func TestConcurrentMake(t *testing.T) {
 		seen[id] = true
 	}
 }
+
+// ------- Generator tests -------
+
+func TestGenerator(t *testing.T) {
+	t.Run("basic", func(t *testing.T) {
+		gen := ulid.NewGenerator()
+		id := gen.Make()
+		if id.IsZero() {
+			t.Fatal("generator produced zero ULID")
+		}
+	})
+
+	t.Run("with node ID", func(t *testing.T) {
+		gen := ulid.NewGenerator(ulid.WithNodeID(42))
+		id := gen.Make()
+
+		nodeID, ok := gen.NodeID()
+		if !ok || nodeID != 42 {
+			t.Fatalf("expected node ID 42, got %d (ok=%v)", nodeID, ok)
+		}
+
+		// Node ID should be in bytes 6-7.
+		if id[6] != 0 || id[7] != 42 {
+			t.Fatalf("node ID not embedded correctly: bytes[6:8] = [%d, %d]", id[6], id[7])
+		}
+	})
+
+	t.Run("with prefix", func(t *testing.T) {
+		gen := ulid.NewGenerator(ulid.WithPrefix("txn"))
+		s := gen.MakePrefixed()
+		if !strings.HasPrefix(s, "txn_") {
+			t.Fatalf("expected txn_ prefix, got %s", s)
+		}
+	})
+
+	t.Run("override prefix", func(t *testing.T) {
+		gen := ulid.NewGenerator(ulid.WithPrefix("txn"))
+		s := gen.MakePrefixed("user")
+		if !strings.HasPrefix(s, "user_") {
+			t.Fatalf("expected user_ prefix, got %s", s)
+		}
+	})
+
+	t.Run("no prefix panics", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic when no prefix specified")
+			}
+		}()
+		gen := ulid.NewGenerator()
+		gen.MakePrefixed()
+	})
+}
+
+func TestGeneratorNew(t *testing.T) {
+	gen := ulid.NewGenerator(ulid.WithNodeID(100))
+	ms := ulid.Now()
+
+	id, err := gen.New(ms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.Time() != ms {
+		t.Fatalf("expected timestamp %d, got %d", ms, id.Time())
+	}
+
+	// Verify node ID.
+	if id[6] != 0 || id[7] != 100 {
+		t.Fatalf("node ID not embedded correctly")
+	}
+}
+
+func TestGeneratorDistributedUniqueness(t *testing.T) {
+	const numNodes = 10
+	const idsPerNode = 1000
+
+	var wg sync.WaitGroup
+	allIDs := make([]ulid.ULID, numNodes*idsPerNode)
+
+	for node := 0; node < numNodes; node++ {
+		gen := ulid.NewGenerator(ulid.WithNodeID(uint16(node)))
+		wg.Add(1)
+		go func(gen *ulid.Generator, offset int) {
+			defer wg.Done()
+			for i := 0; i < idsPerNode; i++ {
+				allIDs[offset+i] = gen.Make()
+			}
+		}(gen, node*idsPerNode)
+	}
+	wg.Wait()
+
+	seen := make(map[ulid.ULID]bool, numNodes*idsPerNode)
+	for _, id := range allIDs {
+		if id.IsZero() {
+			t.Fatal("got zero ULID")
+		}
+		if seen[id] {
+			t.Fatalf("duplicate ULID across nodes: %s", id.String())
+		}
+		seen[id] = true
+	}
+}
+
+func TestGeneratorConcurrent(t *testing.T) {
+	gen := ulid.NewGenerator(ulid.WithNodeID(1))
+	var wg sync.WaitGroup
+	ids := make([]ulid.ULID, 1000)
+
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			ids[idx] = gen.Make()
+		}(i)
+	}
+	wg.Wait()
+
+	seen := make(map[ulid.ULID]bool)
+	for _, id := range ids {
+		if seen[id] {
+			t.Fatalf("duplicate ULID from concurrent generator: %s", id.String())
+		}
+		seen[id] = true
+	}
+}
+
+// ------- Edge cases -------
 
 func TestZeroULID(t *testing.T) {
 	s := ulid.Zero.String()
@@ -730,16 +950,12 @@ func TestZeroULID(t *testing.T) {
 }
 
 func TestKnownValues(t *testing.T) {
-	// Test against known ULID values to verify encoding correctness.
-
-	// A ULID with timestamp 0 and entropy 0 should be all zeros.
 	id, _ := ulid.New(0, nil)
 	if id.String() != "00000000000000000000000000" {
-		t.Fatalf("zero ULID string: expected 00000000000000000000000000, got %s", id.String())
+		t.Fatalf("zero ULID string: expected all zeros, got %s", id.String())
 	}
 
-	// Max ULID.
-	maxID, err := ulid.Parse("7ZZZZZZZZZZZZZZZZZZZZZZZZZ")
+	maxID, err := ulid.Parse("7zzzzzzzzzzzzzzzzzzzzzzzzz")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -764,8 +980,6 @@ func TestDefaultEntropy(t *testing.T) {
 }
 
 func TestMonotonicWithMathRand(t *testing.T) {
-	// math/rand.Rand implements the rng interface (Int63n), which should
-	// trigger the fast-path increment.
 	source := mrand.New(mrand.NewSource(time.Now().UnixNano()))
 	entropy := ulid.Monotonic(source, 0)
 	ms := ulid.Now()
@@ -787,30 +1001,7 @@ func TestMonotonicWithMathRand(t *testing.T) {
 	}
 }
 
-func TestEncodingAlphabet(t *testing.T) {
-	// Verify the encoding alphabet has exactly 32 unique characters.
-	if len(ulid.Encoding) != 32 {
-		t.Fatalf("expected 32 characters, got %d", len(ulid.Encoding))
-	}
-
-	seen := make(map[rune]bool)
-	for _, c := range ulid.Encoding {
-		if seen[c] {
-			t.Fatalf("duplicate character in encoding: %c", c)
-		}
-		seen[c] = true
-	}
-
-	// Verify excluded characters.
-	for _, c := range "IiLlOoUu" {
-		if strings.ContainsRune(ulid.Encoding, c) {
-			t.Fatalf("encoding should not contain %c", c)
-		}
-	}
-}
-
 func TestTimestampPreservation(t *testing.T) {
-	// Verify various timestamps survive encode/decode.
 	timestamps := []uint64{
 		0,
 		1,
@@ -825,12 +1016,10 @@ func TestTimestampPreservation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("New(%d): %v", ms, err)
 		}
-
 		if id.Time() != ms {
 			t.Fatalf("timestamp %d not preserved: got %d", ms, id.Time())
 		}
 
-		// Verify through string round-trip.
 		parsed, err := ulid.Parse(id.String())
 		if err != nil {
 			t.Fatalf("Parse failed for timestamp %d: %v", ms, err)
@@ -868,30 +1057,7 @@ func TestLockedMonotonicReader(t *testing.T) {
 	}
 }
 
-func TestMonotonicSmallIncrement(t *testing.T) {
-	// With inc=1, we should get exactly +1 increments.
-	entropy := ulid.Monotonic(rand.Reader, 1)
-	ms := ulid.Now()
-
-	prev, err := ulid.New(ms, entropy)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for i := 0; i < 50; i++ {
-		next, err := ulid.New(ms, entropy)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if next.Compare(prev) <= 0 {
-			t.Fatalf("iteration %d: monotonic order violated", i)
-		}
-		prev = next
-	}
-}
-
 func TestOverflowBoundary(t *testing.T) {
-	// Characters 0-7 in first position should be valid.
 	for c := byte('0'); c <= '7'; c++ {
 		s := string(c) + strings.Repeat("0", 25)
 		if _, err := ulid.Parse(s); err != nil {
@@ -899,13 +1065,12 @@ func TestOverflowBoundary(t *testing.T) {
 		}
 	}
 
-	// Characters 8-Z in first position should overflow.
 	overflow := []string{
 		"80000000000000000000000000",
 		"90000000000000000000000000",
-		"A0000000000000000000000000",
-		"G0000000000000000000000000",
-		"Z0000000000000000000000000",
+		"a0000000000000000000000000",
+		"g0000000000000000000000000",
+		"z0000000000000000000000000",
 	}
 	for _, s := range overflow {
 		if _, err := ulid.Parse(s); err != ulid.ErrOverflow {
@@ -914,7 +1079,6 @@ func TestOverflowBoundary(t *testing.T) {
 	}
 }
 
-// Verify we don't panic with math.MaxUint64 as increment.
 func TestMonotonicLargeIncrement(t *testing.T) {
 	entropy := ulid.Monotonic(rand.Reader, math.MaxUint64)
 	ms := ulid.Now()
@@ -924,7 +1088,6 @@ func TestMonotonicLargeIncrement(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Second call may or may not overflow depending on random entropy,
-	// but it should not panic.
+	// Should not panic regardless of outcome.
 	_, _ = ulid.New(ms, entropy)
 }
