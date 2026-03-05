@@ -33,6 +33,6 @@ git push origin "v$version"
 
 gh release create "v$version" --generate-notes
 
-GOPROXY=proxy.golang.org go list -m "github.com/Gaucho-Racing/ulid-go@v$version"
+GOPROXY=proxy.golang.org go list -m "github.com/gaucho-racing/ulid-go@v$version"
 
 echo "Package released successfully for version v$version"

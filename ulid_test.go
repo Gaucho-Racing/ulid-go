@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gaucho-Racing/ulid-go"
+	"github.com/gaucho-racing/ulid-go"
 )
 
 func TestNew(t *testing.T) {

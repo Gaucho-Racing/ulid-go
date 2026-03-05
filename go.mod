@@ -1,3 +1,3 @@
-module github.com/Gaucho-Racing/ulid-go
+module github.com/gaucho-racing/ulid-go
 
 go 1.22
