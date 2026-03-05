@@ -1,8 +1,8 @@
 # ulid-go
 
-[![CI](https://github.com/Gaucho-Racing/ulid-go/actions/workflows/ci.yml/badge.svg)](https://github.com/Gaucho-Racing/ulid-go/actions/workflows/ci.yml)
+[![CI](https://github.com/gaucho-racing/ulid-go/actions/workflows/ci.yml/badge.svg)](https://github.com/gaucho-racing/ulid-go/actions/workflows/ci.yml)
 
-A blazing fast, production-grade [ULID](https://github.com/ulid/spec) implementation in Go. Designed to provide a consistent, ergonomic identifier format across Gaucho Racing's services and projects — from telemetry ingestion to user-facing APIs.
+A blazing fast, production-grade [ULID](https://github.com/ulid/spec) implementation in Go. Currently used across Gaucho Racing's various services and projects, from telemetry ingestion to user-facing APIs.
 
 - **Lowercase by default** — all string output uses lowercase Crockford Base32
 - **Prefix support** — generate entity-scoped IDs like `user_01arz3ndek...` or `txn_01arz3ndek...`
@@ -21,13 +21,13 @@ A blazing fast, production-grade [ULID](https://github.com/ulid/spec) implementa
 With [Go's module support](https://go.dev/wiki/Modules#how-to-use-modules), `go [build|run|test]` automatically fetches the necessary dependencies when you add the import in your code:
 
 ```go
-import "github.com/Gaucho-Racing/ulid-go"
+import "github.com/gaucho-racing/ulid-go"
 ```
 
 Alternatively, use `go get`:
 
 ```sh
-go get -u github.com/Gaucho-Racing/ulid-go
+go get -u github.com/gaucho-racing/ulid-go
 ```
 
 ### Usage
@@ -37,7 +37,7 @@ package main
 
 import (
     "fmt"
-    "github.com/Gaucho-Racing/ulid-go"
+    "github.com/gaucho-racing/ulid-go"
 )
 
 func main() {
@@ -93,7 +93,7 @@ A ULID is 128 bits (16 bytes), stored in big-endian (network byte order) as a `[
 | Timestamp | `[0:6]` | 48 | Unix milliseconds, big-endian. Valid until year 10889 AD. |
 | Entropy | `[6:16]` | 80 | Cryptographic randomness (or node-partitioned randomness). |
 
-Using `[16]byte` as the underlying type means ULIDs are **value types** — they live on the stack, are directly comparable with `==`, and require no heap allocation. `bytes.Compare` ordering on the raw bytes is consistent with chronological and lexicographic string ordering because the timestamp occupies the most significant bytes.
+Using `[16]byte` as the underlying type means ULIDs are **value types**: they live on the stack, are directly comparable with `==`, and require no heap allocation. `bytes.Compare` ordering on the raw bytes is consistent with chronological and lexicographic string ordering because the timestamp occupies the most significant bytes.
 
 ### Crockford Base32 Encoding
 
@@ -109,13 +109,13 @@ The first 10 characters encode the 48-bit timestamp, the remaining 16 encode the
 ttttttttttrrrrrrrrrrrrrrrr
 ```
 
-The encoding and decoding are **fully unrolled** — every bit extraction/insertion is a single explicit line with no loops. Decoding uses a 256-byte lookup table for O(1) character-to-value conversion, and both upper and lowercase map to the same values, making parsing inherently case-insensitive without any `strings.ToUpper` call.
+The encoding and decoding are **fully unrolled**: every bit extraction/insertion is a single explicit line with no loops. Decoding uses a 256-byte lookup table for O(1) character-to-value conversion, and both upper and lowercase map to the same values, making parsing inherently case-insensitive without any `strings.ToUpper` call.
 
 **Overflow check**: 26 Base32 characters technically encode 130 bits, but a ULID only uses 128. The first character is restricted to values `0`–`7` (3 bits). Any ULID string starting with `8` or higher is rejected with `ErrOverflow`. The largest valid ULID is `7zzzzzzzzzzzzzzzzzzzzzzzzz`.
 
 #### `Parse` vs `ParseStrict`
 
-`Parse` skips character validation for speed — invalid characters (like `I`, `L`, `O`, `U`) will silently produce wrong bits rather than returning an error. This is a deliberate performance tradeoff: **10.6 ns vs 17.7 ns**. Use `ParseStrict` when accepting untrusted input. Use `Parse` when you control the input (e.g., reading from your own database).
+`Parse` skips character validation for speed. Invalid characters (like `I`, `L`, `O`, `U`) will silently produce wrong bits rather than returning an error. This is a deliberate performance tradeoff: **10.6 ns vs 17.7 ns**. Use `ParseStrict` when accepting untrusted input. Use `Parse` when you control the input (e.g., reading from your own database).
 
 ### Monotonicity
 
@@ -124,7 +124,7 @@ When multiple ULIDs are generated within the same millisecond, the spec requires
 ```go
 entropy := ulid.Monotonic(rand.Reader, 0)
 
-// All three share the same millisecond — entropy is incremented, not re-randomized
+// All three share the same millisecond: entropy is incremented, not re-randomized
 id1, _ := ulid.New(ms, entropy) // random entropy R
 id2, _ := ulid.New(ms, entropy) // R + random_increment
 id3, _ := ulid.New(ms, entropy) // R + random_increment + random_increment
@@ -133,7 +133,7 @@ id3, _ := ulid.New(ms, entropy) // R + random_increment + random_increment
 
 The increment is a random value between 1 and `inc` (default `math.MaxUint32`). This balances unpredictability with entropy space utilization. A lower `inc` (e.g., 1) produces more IDs per millisecond before overflow but makes sequential IDs predictable.
 
-**Overflow behavior**: The 80-bit entropy space is tracked using a custom `uint80` type (`uint16` high + `uint64` low) rather than `math/big.Int` to avoid heap allocations. When incrementing would overflow, `ErrMonotonicOverflow` is returned — the library **never** silently wraps around or advances the timestamp, as that would break sort ordering. Callers must handle this (e.g., sleep until the next millisecond).
+**Overflow behavior**: The 80-bit entropy space is tracked using a custom `uint80` type (`uint16` high + `uint64` low) rather than `math/big.Int` to avoid heap allocations. When incrementing would overflow, `ErrMonotonicOverflow` is returned. The library **never** silently wraps around or advances the timestamp, as that would break sort ordering. Callers must handle this (e.g., sleep until the next millisecond).
 
 **Thread safety**: `MonotonicEntropy` itself is **not** thread-safe. For concurrent use, wrap it with `LockedMonotonicReader` (which adds a `sync.Mutex`), or use `DefaultEntropy()` / `Make()` which do this automatically. The `Generator` type also handles its own locking internally.
 
@@ -171,7 +171,7 @@ This partitions the entropy layout as follows:
 
 Two generators with different node IDs **cannot** produce the same ULID, even within the same millisecond, because their entropy spaces are disjoint. This provides the same uniqueness guarantee as a centralized ID service but with zero coordination overhead.
 
-**Tradeoffs**: Embedding a node ID reduces the random entropy from 80 bits to 64 bits. This still provides 1.8×10¹⁹ unique values per millisecond per node, which is more than sufficient for any practical workload. However, the node ID is **not** monotonically incremented — it overwrites bytes 6–7 after the monotonic entropy is written to bytes 6–15. This means that within a single node, IDs from a `Generator` with a node ID are **not** guaranteed to be monotonically ordered within the same millisecond (the node ID clobbers the high bits of the monotonic sequence). If you need both distributed uniqueness and intra-millisecond monotonic ordering, you should use different millisecond granularity or accept the ordering limitation.
+**Tradeoffs**: Embedding a node ID reduces the random entropy from 80 bits to 64 bits. This still provides 1.8×10¹⁹ unique values per millisecond per node, which is more than sufficient for any practical workload. However, the node ID is **not** monotonically incremented. It overwrites bytes 6-7 after the monotonic entropy is written to bytes 6-15. This means that within a single node, IDs from a `Generator` with a node ID are **not** guaranteed to be monotonically ordered within the same millisecond (the node ID clobbers the high bits of the monotonic sequence). If you need both distributed uniqueness and intra-millisecond monotonic ordering, you should use different millisecond granularity or accept the ordering limitation.
 
 ### Prefixed IDs
 
@@ -183,14 +183,14 @@ id.Prefixed("user") // "user_01arz3ndektsv4rrffq69g5fav"
 id.Prefixed("txn")  // "txn_01arz3ndektsv4rrffq69g5fav"
 ```
 
-The prefix is **not** part of the ULID itself — it is prepended at string formatting time with an underscore separator. The underlying 128-bit binary representation is identical regardless of prefix. `ParsePrefixed` splits on the first `_` and parses the ULID portion:
+The prefix is **not** part of the ULID itself. It is prepended at string formatting time with an underscore separator. The underlying 128-bit binary representation is identical regardless of prefix. `ParsePrefixed` splits on the first `_` and parses the ULID portion:
 
 ```go
 prefix, id, err := ulid.ParsePrefixed("user_01arz3ndektsv4rrffq69g5fav")
 // prefix = "user", id = the parsed ULID, err = nil
 ```
 
-Prefixes are not validated — the library does not enforce any naming convention. By convention, use short lowercase alphanumeric strings like `user`, `txn`, `evt`, `msg`.
+Prefixes are not validated. The library does not enforce any naming convention. By convention, use short lowercase alphanumeric strings like `user`, `txn`, `evt`, `msg`.
 
 ### Deviations from the Official Spec
 
@@ -204,7 +204,7 @@ Prefixes are not validated — the library does not enforce any naming conventio
 
 ### Footguns
 
-- **`Parse` does not validate characters.** If you pass `"IIIIIIIIIIIIIIIIIIIIIIIIII"` (26 I's) to `Parse`, it will not return an error — it will produce garbage. Use `ParseStrict` for untrusted input.
+- **`Parse` does not validate characters.** If you pass `"IIIIIIIIIIIIIIIIIIIIIIIIII"` (26 I's) to `Parse`, it will not return an error. It will produce garbage. Use `ParseStrict` for untrusted input.
 - **`MonotonicEntropy` is not thread-safe.** Using it from multiple goroutines without `LockedMonotonicReader` will corrupt state. `Make()` and `Generator` handle this for you.
 - **`Bytes()` and `Entropy()` return copies.** This is intentional to prevent callers from mutating ULID internals through the returned slice. If you need zero-copy access, index into the `[16]byte` array directly (e.g., `id[6:]` for entropy).
 - **`Generator` with node ID clobbers monotonic high bits.** See the distributed uniqueness section above. If intra-millisecond ordering matters more than distributed uniqueness, use `Make()` instead of a `Generator` with a node ID.
@@ -351,4 +351,4 @@ Don't forget to give the project a star! Thanks again!
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
