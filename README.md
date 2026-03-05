@@ -1,5 +1,7 @@
 # ulid-go
 
+[![CI](https://github.com/Gaucho-Racing/ulid-go/actions/workflows/ci.yml/badge.svg)](https://github.com/Gaucho-Racing/ulid-go/actions/workflows/ci.yml)
+
 A blazing fast, production-grade [ULID](https://github.com/ulid/spec) implementation in Go with lowercase output, prefix support, and distributed collision-free guarantees.
 
 ```
@@ -22,13 +24,23 @@ A blazing fast, production-grade [ULID](https://github.com/ulid/spec) implementa
 - **128-bit UUID compatible** — drop-in replacement for UUID columns in databases
 - **Standard interfaces** — implements `encoding.TextMarshaler`, `encoding.BinaryMarshaler`, `json.Marshaler`, `sql.Scanner`, `driver.Valuer`, `fmt.Stringer`
 
-## Install
+## Getting Started
 
-```bash
-go get github.com/Gaucho-Racing/ulid-go
+### Installing
+
+With [Go's module support](https://go.dev/wiki/Modules#how-to-use-modules), `go [build|run|test]` automatically fetches the necessary dependencies when you add the import in your code:
+
+```go
+import "github.com/Gaucho-Racing/ulid-go"
 ```
 
-## Quick Start
+Alternatively, use `go get`:
+
+```sh
+go get -u github.com/Gaucho-Racing/ulid-go
+```
+
+### Usage
 
 ```go
 package main
@@ -57,7 +69,7 @@ func main() {
 }
 ```
 
-## Distributed Systems
+### Distributed Systems
 
 For multi-node deployments, use a `Generator` with a unique node ID per process. The node ID is embedded in the entropy field, partitioning the ID space so that no two nodes can ever produce the same ULID — even within the same millisecond — without any external coordination.
 
@@ -68,9 +80,9 @@ gen := ulid.NewGenerator(
     ulid.WithPrefix("evt"),    // optional default prefix
 )
 
-id := gen.Make()                 // evt_01jgy5fz7r...
-prefixed := gen.MakePrefixed()   // uses default prefix "evt"
-custom := gen.MakePrefixed("txn") // override with "txn"
+id := gen.Make()                  // 01jgy5fz7r...
+prefixed := gen.MakePrefixed()    // uses default prefix: evt_01jgy5fz7r...
+custom := gen.MakePrefixed("txn") // override with "txn": txn_01jgy5fz7r...
 ```
 
 The node ID occupies the first 2 bytes of the 80-bit entropy field (16 bits = 65,536 possible nodes), leaving 64 bits for monotonic random entropy. Within a single node, monotonic entropy ensures strict ordering and uniqueness. Across nodes, the node ID partition guarantees no collisions.
@@ -151,7 +163,7 @@ The node ID occupies the first 2 bytes of the 80-bit entropy field (16 bits = 65
 
 ## Benchmarks
 
-Measured on Apple M1 Max, Go 1.24:
+Measured on Apple M1 Max:
 
 ```
 BenchmarkNew/crypto/rand          6,975,308      159.9 ns/op    16 B/op    1 allocs/op
@@ -209,6 +221,17 @@ When using a `Generator` with a node ID, the entropy layout becomes:
  Bytes [6:8]  - 16-bit node ID
  Bytes [8:16] - 64-bit monotonic random entropy
 ```
+
+## Contributing
+
+If you have a suggestion that would make this better, please fork the repo and create a pull request. You can also simply open an issue with the tag "enhancement".
+Don't forget to give the project a star! Thanks again!
+
+1. Fork the Project
+2. Create your Feature Branch (`git checkout -b gh-username/my-amazing-feature`)
+3. Commit your Changes (`git commit -m 'Add my amazing feature'`)
+4. Push to the Branch (`git push origin gh-username/my-amazing-feature`)
+5. Open a Pull Request
 
 ## License
 
