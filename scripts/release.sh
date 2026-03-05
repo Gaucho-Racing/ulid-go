@@ -12,7 +12,7 @@ else
     echo "Latest release: $latest"
 fi
 
-read -p "Enter the new version (e.g. 1.0.0): " version
+read -p "Enter the new version: " version
 if [ -z "$version" ]; then
     echo "No version provided. Aborting."
     exit 1
