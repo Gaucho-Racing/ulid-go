@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/gaucho-racing/ulid-go/actions/workflows/ci.yml/badge.svg)](https://github.com/gaucho-racing/ulid-go/actions/workflows/ci.yml)
 
-A blazing fast, production-grade [ULID](https://github.com/ulid/spec) implementation in Go. Currently used across Gaucho Racing's various services and projects, from telemetry ingestion to user-facing APIs.
+A blazing fast, production-grade [ULID](https://github.com/ulid/spec) implementation in Go. Designed to provide a consistent, ergonomic identifier format, ulid-go is currently used across many of Gaucho Racing's services and projects.
 
 - **Lowercase by default** — all string output uses lowercase Crockford Base32
 - **Prefix support** — generate entity-scoped IDs like `user_01arz3ndek...` or `txn_01arz3ndek...`
