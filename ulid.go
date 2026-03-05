@@ -25,6 +25,7 @@
 package ulid
 
 import (
+	"bytes"
 	"crypto/rand"
 	"database/sql/driver"
 	"errors"
@@ -274,15 +275,7 @@ func (id ULID) IsZero() bool {
 // This ordering is consistent with the ULID's chronological and string sort
 // ordering.
 func (id ULID) Compare(other ULID) int {
-	for i := 0; i < 16; i++ {
-		if id[i] < other[i] {
-			return -1
-		}
-		if id[i] > other[i] {
-			return 1
-		}
-	}
-	return 0
+	return bytes.Compare(id[:], other[:])
 }
 
 // SetTime sets the timestamp component of the ULID to the given Unix
