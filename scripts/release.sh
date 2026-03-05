@@ -22,7 +22,7 @@ fi
 version="${version#v}"
 
 echo ""
-read -p "This will release v$version. Continue? (y/n): " confirm
+read -p "This will release v$version. Continue? (y/N): " confirm
 if [ "$confirm" != "y" ]; then
     echo "Aborted."
     exit 1
