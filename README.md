@@ -1,8 +1,8 @@
 # ulid-go
 
+[![Release](https://img.shields.io/github/release/gaucho-racing/ulid-go.svg?style=rounded)](https://github.com/gaucho-racing/ulid-go/releases)
 [![CI](https://github.com/gaucho-racing/ulid-go/actions/workflows/ci.yml/badge.svg)](https://github.com/gaucho-racing/ulid-go/actions/workflows/ci.yml)
 [![GoDoc](https://pkg.go.dev/badge/github.com/gaucho-racing/ulid-go?status.svg)](https://pkg.go.dev/github.com/gaucho-racing/ulid-go?tab=doc)
-[![Release](https://img.shields.io/github/release/gaucho-racing/ulid-go.svg?style=rounded)](https://github.com/gaucho-racing/ulid-go/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A blazing fast, production-grade [ULID](https://github.com/ulid/spec) implementation in Go. Designed to provide a consistent, ergonomic identifier format, ulid-go is currently used across many of Gaucho Racing's services and projects.
